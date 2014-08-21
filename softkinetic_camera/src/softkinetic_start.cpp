@@ -71,7 +71,6 @@
 #include <pcl/range_image/range_image.h>
 #include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
-//#include <pcl/visualization/cloud_viewer.h>
 
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
@@ -136,7 +135,6 @@ int color_frame_rate;
 // New audio sample event handler
 void onNewAudioSample(AudioNode node, AudioNode::NewSampleReceivedData data)
 {
-    //printf("A#%u: %d\n",g_aFrames,data.audioData.size());
     g_aFrames++;
 }
 
@@ -212,6 +210,17 @@ void filterCloudRadiusBased(pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_to_filt
     cloud.header.stamp = ros::Time::now();
 }
 
+void uvToColorPixelIndex(const UV uv, const int widthOfColorImage, const int heightOfColorImage, int* colorPixelIndex, int* colorPixelRow, int* colorPixelCol)
+{
+  if(uv.u > 0.001 && uv.u < 0.999 && uv.v > 0.001 && uv.v < 0.999) {
+    *colorPixelRow = (int) (uv.v * ((float) heightOfColorImage));
+    *colorPixelCol = (int) (uv.u * ((float) widthOfColorImage));
+    *colorPixelIndex = (*colorPixelRow)*widthOfColorImage + *colorPixelCol;
+  }
+  else
+    *colorPixelIndex = -1;
+}
+
 // New depth sample event varsace tieshandler
 void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data)
 {
@@ -231,8 +240,6 @@ void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data)
         depth_img_msg.header.frame_id = "/softkinetic_link";
     }
     depth_img_msg.header.stamp = ros::Time::now();
-
-    int count = -1;
 
     // Project some 3D points in the Color Frame
     if (!g_pProjHelper)
@@ -274,21 +281,53 @@ void onNewDepthSample(DepthNode node, DepthNode::NewSampleReceivedData data)
 
     float* depth_img_ptr = reinterpret_cast<float*>(&depth_img_msg.data[0]);
 
-    for(int i = 1;i < h ;i++){
-        for(int j = 1;j < w ; j++){
+    int count = -1;
+    int pc_count = 0;
+    int colorPixelIndex, colorPixelRow, colorPixelCol;
+
+    for(int i = 0;i < h ;i++){
+        for(int j = 0;j < w ; j++){
             count++;
-            current_cloud->points[count].x = -data.verticesFloatingPoint[count].x;
-            current_cloud->points[count].y = data.verticesFloatingPoint[count].y;
-            if(data.verticesFloatingPoint[count].z == 32001){
-                current_cloud->points[count].z = 0;
-            }else{
-                current_cloud->points[count].z = data.verticesFloatingPoint[count].z;
-            }
-            p3DPoints[0] = data.vertices[count];
-            g_pProjHelper->get2DCoordinates ( p3DPoints, p2DPoints, 1, CAMERA_PLANE_COLOR);
 
             *depth_img_ptr = data.depthMapFloatingPoint[count];
             ++depth_img_ptr;
+
+            if(data.vertices[count].z == 32002 || data.confidenceMap[count] <= confidence_threshold){
+                // current_cloud->points[count].z = 0;
+              continue;
+            }else{
+                current_cloud->points[pc_count].z = data.verticesFloatingPoint[count].z;
+            }
+            current_cloud->points[pc_count].x = -data.verticesFloatingPoint[count].x;
+            current_cloud->points[pc_count].y = data.verticesFloatingPoint[count].y;
+
+            uvToColorPixelIndex(data.uvMap[count], image.width, image.height, &colorPixelIndex, &colorPixelRow, &colorPixelCol);
+            
+
+//            p3DPoints[0] = data.vertices[count];
+//            g_pProjHelper->get2DCoordinates ( p3DPoints, p2DPoints, 1, CAMERA_PLANE_COLOR);
+//            int x_pos = round(p2DPoints[0].x);
+//            int y_pos = round(p2DPoints[0].y);
+
+//            if(y_pos < 0 || y_pos >= image.height || x_pos < 0 || x_pos >= image.width){
+            if (colorPixelIndex == -1)
+            {
+              b = 0;
+              g = 0;
+              r = 0;
+            }else{
+              // b = image.data[(y_pos*image.width+x_pos)*3+0];
+              // g = image.data[(y_pos*image.width+x_pos)*3+1];
+              // r = image.data[(y_pos*image.width+x_pos)*3+2];
+          b = image.data[colorPixelIndex*3+0];
+          g = image.data[colorPixelIndex*3+1];
+          r = image.data[colorPixelIndex*3+2];
+            }
+            current_cloud->points[pc_count].b = b;
+            current_cloud->points[pc_count].g = g;
+            current_cloud->points[pc_count].r = r;
+
+            ++pc_count;
         }
     }
 
@@ -366,6 +405,7 @@ void configureDepthNode()
 
     g_context.requestControl(g_dnode,0);
 
+    g_dnode.setEnableUvMap(true);
     g_dnode.setEnableVertices(true);
     g_dnode.setEnableConfidenceMap(true);
     g_dnode.setConfidenceThreshold(confidence_threshold);
